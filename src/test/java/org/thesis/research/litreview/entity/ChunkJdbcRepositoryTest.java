@@ -6,6 +6,7 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Unit tests for the ranking maths in {@link ChunkJdbcRepository}.
@@ -95,5 +96,58 @@ class ChunkJdbcRepositoryTest {
         assertThat(ChunkJdbcRepository.escapeLike("last_mile")).isEqualTo("last\\_mile");
         assertThat(ChunkJdbcRepository.escapeLike("back\\slash")).isEqualTo("back\\\\slash");
         assertThat(ChunkJdbcRepository.escapeLike("plain text")).isEqualTo("plain text");
+    }
+
+    // ------------------------------------------------- vector text literals
+
+    @Test
+    void rendersAVectorInPgvectorTextForm() {
+        // This string is bound as a parameter and cast by ?::vector, so the
+        // format must be exactly what pgvector parses.
+        assertThat(ChunkJdbcRepository.toVectorLiteral(new float[] { 1f, 2.5f, -0.25f }))
+                .isEqualTo("[1.0,2.5,-0.25]");
+    }
+
+    @Test
+    void rendersAThreeEightyFourDimensionalVectorWithAllComponents() {
+        // The real width. A dropped or duplicated component would produce a
+        // vector of the wrong dimension and fail at the database instead.
+        float[] vector = new float[384];
+        for (int i = 0; i < vector.length; i++) {
+            vector[i] = i / 384f;
+        }
+
+        String literal = ChunkJdbcRepository.toVectorLiteral(vector);
+
+        assertThat(literal).startsWith("[").endsWith("]");
+        assertThat(literal.split(",", -1)).hasSize(384);
+    }
+
+    @Test
+    void doesNotLosePrecision() {
+        // Float.toString is used rather than %f precisely so components are not
+        // truncated - a truncated component silently shifts every cosine
+        // distance and therefore every search result order.
+        assertThat(ChunkJdbcRepository.toVectorLiteral(new float[] { 0.123456789f }))
+                .isEqualTo("[" + Float.toString(0.123456789f) + "]");
+    }
+
+    @Test
+    void handlesScientificNotationWithoutProducingInvalidSyntax() {
+        // Very small embedding components render as "1.0E-7" in Java. pgvector
+        // accepts that, but the comma separators must still be right.
+        assertThat(ChunkJdbcRepository.toVectorLiteral(new float[] { 1.0E-7f, 2f }))
+                .isEqualTo("[1.0E-7,2.0]");
+    }
+
+    @Test
+    void rejectsAnEmptyVectorRatherThanWritingAnInvalidLiteral() {
+        // "[]" would fail at the database with an opaque cast error; failing
+        // here names the actual problem.
+        assertThatThrownBy(() -> ChunkJdbcRepository.toVectorLiteral(new float[0]))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must not be empty");
+        assertThatThrownBy(() -> ChunkJdbcRepository.toVectorLiteral(null))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 }

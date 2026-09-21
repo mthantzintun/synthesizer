@@ -98,7 +98,28 @@
 			<artifactId>spring-boot-starter-test</artifactId>
 			<scope>test</scope>
 		</dependency>
-
+		<!--
+		  Flyway integration. spring-boot-starter-flyway is required, not just the
+		  flyway-* libraries: Spring Boot 4 split autoconfiguration into
+		  per-technology modules, so without the starter nothing calls
+		  Flyway.migrate() and `spring.flyway.*` is silently inert - the app
+		  starts fine and then fails at runtime with `relation "paper" does not
+		  exist`. flyway-database-postgresql alone only puts the libraries on the
+		  classpath.
+		-->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-flyway</artifactId>
+		</dependency>
+		<!--
+		  Actuator. application.yaml already exposes health,info,metrics, but
+		  without this dependency those endpoints 404 - management.endpoints.*
+		  configures an actuator that is not there.
+		-->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-actuator</artifactId>
+		</dependency>
 	</dependencies>
 	<dependencyManagement>
 		<dependencies>

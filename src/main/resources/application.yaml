@@ -18,6 +18,12 @@ spring:
     password: ${LITREVIEW_DB_PASSWORD:litreview_dev}
     hikari:
       maximum-pool-size: ${LITREVIEW_DB_POOL_SIZE:10}
+      # No connection-init-sql here. The pgvector type is registered by neither
+      # SQL nor a driver hook: `ADD TYPE vector AS com.pgvector.PGvector` is a
+      # Java API call (PGConnection.addDataType), not a statement Postgres
+      # understands - passing it as init SQL fails with
+      # `syntax error at or near "ADD"`. Vectors are instead bound as pgvector
+      # text literals with an explicit cast; see ChunkJdbcRepository.
   flyway:
     enabled: true
     locations: classpath:db/migration

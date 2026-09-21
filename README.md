@@ -68,16 +68,44 @@ override the search.
 
 ## Running
 
-```bash
-# Postgres (pgvector) + GROBID
-docker compose up -d
+Two ways. Both read `.env` for credentials and the LLM key.
 
-# the app reads .env for credentials and the LLM key
+**Host loop (default).** Infra in Docker, app on the host — the fast edit cycle:
+
+```bash
+docker compose up -d            # postgres, grobid, pgadmin
 ./mvnw spring-boot:run
 ```
 
-GROBID takes ~60s to load its models on a cold start. Wait for
-`GET http://localhost:8070/api/isalive` to return `true` before ingesting.
+**Whole stack in Docker.** For demos and reproducibility:
+
+```bash
+docker compose --profile app up -d --build
+```
+
+The `app` service is behind a profile deliberately: rebuilding the image takes
+minutes versus seconds for `spring-boot:run`, and the infra containers change
+almost never.
+
+### Where configuration lives
+
+Three places, split by concern. Keeping the split strict is what prevents the
+same variable being set for one environment and forgotten for another:
+
+| Concern | Lives in | Examples |
+| --- | --- | --- |
+| Image filesystem | `Dockerfile` `ENV` | `LITREVIEW_PDF_ROOT`, `LITREVIEW_BIB_FILE` |
+| Network topology | compose `environment:` | `LITREVIEW_DB_URL`, `LITREVIEW_GROBID_URL` |
+| Secrets | `.env` (gitignored) | `OPENROUTER_API_KEY`, `POSTGRES_PASSWORD` |
+
+`localhost` means different things on the host and in a container, so the DB and
+GROBID URLs are **never** in `.env` — that file holds host-oriented values.
+Compose's `environment:` overrides `env_file:`, which is what makes the
+containerised run reach `postgres:5432` instead of its own `localhost`.
+
+GROBID takes ~60s to load its models on a cold start. The `app` service waits on
+both dependencies' healthchecks (`condition: service_healthy`), so it will not
+start early and fail with a connection error that looks like a misconfigured URL.
 
 ## Endpoints
 
@@ -139,6 +167,30 @@ the SQL and that method must not drift.
 gap grid use no LLM, so the numbers they report can be cited. Contradictions are
 persisted, not recomputed, because a human verdict is recorded against them;
 re-running the finder is additive and never deletes a reviewed row.
+
+**`spring-boot-starter-flyway` is required, not just the Flyway libraries.**
+Spring Boot 4 split autoconfiguration into per-technology modules. With only
+`flyway-database-postgresql` on the classpath, nothing calls `Flyway.migrate()`,
+`spring.flyway.*` is silently inert, and the app starts happily and then fails at
+runtime with `relation "paper" does not exist`. Adding the starter is what makes
+migrations run.
+
+**Vectors are bound as text literals, not `PGvector` objects.**
+`com.pgvector.PGvector` needs the driver type registered first
+(`PGConnection.addDataType`), and that registration cannot happen from a Spring
+bean — Hikari seals its config once the pool has started, so
+`setConnectionInitSql` throws. Instead the vector is rendered as
+`[0.1,0.2,...]` and cast by the SQL: `?::vector` on insert,
+`CAST(:embedding AS vector)` in the search CTE. The `CAST` form is used rather
+than `:embedding::vector` because `::` is ambiguous to Spring's named-parameter
+parser.
+
+**A bean class with two constructors needs `@Autowired`.** `LibraryLoader` has a
+public one and a package-private one for tests. Spring's rule is "use the single
+constructor if there is exactly one, otherwise look for a no-arg one", so with
+two it fails with `No default constructor found` — a failure that only appears
+once the datasource connects, which is why it hid behind the earlier connection
+error.
 
 ## Testing
 

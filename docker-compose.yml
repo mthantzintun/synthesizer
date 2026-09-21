@@ -24,10 +24,19 @@ services:
     - "8070:8070"
     environment:
     - JAVA_OPTS=-Xmx16g
+    # The grobid image ships neither curl nor wget (only bash and perl), so the
+    # usual `curl -f` healthcheck fails with "executable file not found" - which
+    # docker reports as `unhealthy` even though GROBID is serving fine. That in
+    # turn blocks the `app` service, whose depends_on waits for this to be
+    # healthy. This talks HTTP over bash's /dev/tcp instead.
+    #
+    # Note /api/isalive returns the literal body "true" once GROBID has finished
+    # loading its models, so grepping for it is the real readiness signal.
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8070/api/isalive"]
+      test: ["CMD", "bash", "-c",
+             "exec 3<>/dev/tcp/localhost/8070 && printf 'GET /api/isalive HTTP/1.0\\r\\n\\r\\n' >&3 && timeout 5 grep -q true <&3"]
       interval: 10s
-      timeout: 5s
+      timeout: 8s
       retries: 5
       start_period: 60s
   pgadmin:
@@ -36,6 +45,59 @@ services:
       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@local.dev}
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-admin}
     ports: ["5050:80"]
+
+  # ---------------------------------------------------------------------------
+  # The application itself. Behind a profile, so it is opt-in:
+  #
+  #   docker compose up -d                  -> infra only; run the app on the host
+  #                                            via ./mvnw spring-boot:run (fast loop)
+  #   docker compose --profile app up -d    -> whole stack, for demos/reproducibility
+  #
+  # This is deliberately NOT the default. Rebuilding the 365 MB image on every
+  # code change is minutes versus seconds for spring-boot:run, and you are still
+  # iterating on this codebase. The infra containers change almost never.
+  # ---------------------------------------------------------------------------
+  app:
+    profiles: ["app"]
+    build: .
+    container_name: litreview-app
+    ports:
+      - "8080:8080"
+
+    # Brings in OPENROUTER_API_KEY and the DB credentials. Note this file holds
+    # HOST-oriented values, so it also brings in
+    # LITREVIEW_DB_URL=jdbc:postgresql://localhost:5432/litreview - which is
+    # wrong here. The `environment:` block below overrides it (compose's
+    # `environment:` takes precedence over `env_file:`). Without that override
+    # the app tries to reach Postgres inside its own container and dies with
+    # "Connection to localhost:5432 refused".
+    env_file:
+      - .env
+
+    environment:
+      # Network topology lives here, not in .env and not in the Dockerfile:
+      # service names resolve only inside the compose network. The Dockerfile
+      # owns image-filesystem paths (pdf root, bib file, TEI cache); this block
+      # owns "where is everything else".
+      LITREVIEW_DB_URL: jdbc:postgresql://postgres:5432/litreview
+      LITREVIEW_GROBID_URL: http://grobid:8070
+
+    # Both dependencies are healthchecked, so this waits for Postgres to accept
+    # connections and GROBID to finish loading its models. Without it the app
+    # can win the race and fail with a connection error that looks identical to
+    # a misconfigured URL.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      grobid:
+        condition: service_healthy
+
+    # The corpus is baked into the image at /app/papers and /app/data. Mount it
+    # instead once the library starts growing, so adding a paper does not need a
+    # rebuild:
+    #   volumes:
+    #     - ./src/main/resources/papers:/app/papers:ro
+    #     - ./src/main/resources/data:/app/data:ro
 
 volumes:
   pg_data:

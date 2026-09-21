@@ -17,6 +17,7 @@ import java.util.Map;
 import org.jbibtex.ParseException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.DefaultResourceLoader;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.ResourceLoader;
@@ -36,6 +37,19 @@ public class LibraryLoader {
     private final LitreviewProperties props;
     private final ResourceLoader resourceLoader;
 
+    /**
+     * The constructor Spring uses.
+     *
+     * <p>{@code @Autowired} is required, not decorative. This class has two
+     * constructors - this one and the package-private one below that lets tests
+     * inject a {@link ResourceLoader} - and Spring cannot choose between them.
+     * Its rule is "use the single constructor if there is exactly one,
+     * otherwise look for a no-arg constructor", so with two it fails at startup
+     * with {@code No default constructor found}. That failure only surfaces
+     * once the datasource connects, which is why it stayed hidden behind the
+     * earlier connection error.
+     */
+    @Autowired
     public LibraryLoader(BibtexParser parser, LitreviewProperties props) {
         this(parser, props, new DefaultResourceLoader());
     }

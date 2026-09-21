@@ -18,8 +18,13 @@ COPY --from=build /build/src/main/resources/papers/ /app/papers/
 COPY --from=build /build/src/main/resources/data/ /app/data/
 
 # Point the pipeline at the copied corpus rather than src/main/resources, which
-# does not exist in this image. The GROBID URL is overridden too, since
-# "localhost" inside a container is the container itself.
+# does not exist in this image.
+#
+# Only image-filesystem paths belong here. Network topology (the database URL,
+# the GROBID URL) is declared by whoever runs the container - see the `app`
+# service in docker-compose.yml. Keeping the split strict is what prevents one
+# variable being overridden for containers while another is forgotten, which is
+# exactly how `localhost` leaked into a containerised run.
 #
 # Secrets (OPENROUTER_API_KEY, LITREVIEW_DB_PASSWORD) are deliberately NOT baked
 # in - pass them at run time:
@@ -27,7 +32,6 @@ COPY --from=build /build/src/main/resources/data/ /app/data/
 # The app also reads a .env from the working directory if one is mounted.
 ENV LITREVIEW_PDF_ROOT=/app/papers \
     LITREVIEW_BIB_FILE=file:/app/data/library.bib \
-    LITREVIEW_GROBID_URL=http://grobid:8070 \
     LITREVIEW_TEI_CACHE_DIR=/app/.cache/tei
 
 ENTRYPOINT ["java", "-jar", "app.jar"]

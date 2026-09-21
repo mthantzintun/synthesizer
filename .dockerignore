@@ -1,0 +1,35 @@
+# Keeps the build context small and, more importantly, keeps secrets out of it.
+#
+# Without this, `docker build .` uploads the whole working tree as build context
+# - including target/ (a ~365 MB fat jar) and .env. Even though the Dockerfile
+# never COPYs .env today, anything that later does `COPY . .` would bake your
+# OpenRouter key into an image layer permanently.
+
+# build output - the jar is built inside the image by the multi-stage build,
+# so the host's target/ is never needed as context
+target/
+
+# secrets - never send these to the daemon
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.jks
+
+# local caches
+.cache/
+
+# vcs and tooling
+.git/
+.gitignore
+.gitattributes
+.idea/
+.vscode/
+.mvn/wrapper/maven-wrapper.jar
+
+# docs, diagrams and logs are not needed to build the jar
+*.log
+*.md
+!HELP.md
+src/main/resources/docs/

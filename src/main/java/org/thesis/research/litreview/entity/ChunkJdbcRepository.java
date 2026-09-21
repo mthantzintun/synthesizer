@@ -19,8 +19,6 @@ import org.thesis.research.litreview.config.LitreviewProperties;
 import org.thesis.research.litreview.util.Chunk;
 import org.thesis.research.litreview.venue.grobid.TeiDocument;
 
-import com.pgvector.PGvector;
-
 /**
  * Owns the two columns of {@code chunk} that Hibernate cannot map: the
  * pgvector {@code embedding} and the generated {@code tsv}.
@@ -28,23 +26,39 @@ import com.pgvector.PGvector;
  * <p>{@link ChunkEntity} handles ordinary relational reads. Everything that
  * touches the vector lives here, because:
  * <ul>
- *   <li>Hibernate has no built-in pgvector type, and a {@code float[]} needs to
- *       be bound as a {@code PGvector} for the driver to send it as
- *       {@code vector(384)};</li>
+ *   <li>Hibernate has no built-in pgvector type;</li>
  *   <li>{@code tsv} is {@code GENERATED ALWAYS} - any ORM write to it is an
  *       error, so it must stay out of the entity entirely;</li>
  *   <li>hybrid retrieval is one SQL statement over both indexes, which is
  *       awkward to express in JPQL and trivial to express in SQL.</li>
  * </ul>
+ *
+ * <p><b>How vectors are bound.</b> As a pgvector text literal with an explicit
+ * cast - {@code CAST(:embedding AS vector)} - rather than via the {@code PGvector}
+ * class from the pgvector-java library. That class only works if the driver
+ * type is registered first ({@code PGConnection.addDataType}), and the
+ * registration cannot be done from a Spring bean: Hikari seals its config once
+ * the pool has started, so {@code setConnectionInitSql} throws. The
+ * text-literal form needs no registration, no pool hook and no library, and it
+ * is what the server would have parsed the other form into anyway.
+ *
+ * <p>{@code CAST(... AS vector)} is used rather than the shorter
+ * {@code :embedding::vector}: the {@code ::} form is ambiguous to Spring's
+ * named-parameter parser, which reads {@code :name} greedily. The {@code CAST}
+ * form leaves nothing to interpret.
  */
 @Repository
 public class ChunkJdbcRepository {
 
     private static final Logger log = LoggerFactory.getLogger(ChunkJdbcRepository.class);
 
+    /**
+     * Note the explicit {@code ::vector} cast: the bound value is a string, and
+     * without the cast Postgres rejects it as an unknown-typed literal.
+     */
     private static final String INSERT_SQL = """
             INSERT INTO chunk (paper_id, section, canonical_section, ordinal, page, content, embedding)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?::vector)
             """;
 
     /**
@@ -66,12 +80,12 @@ public class ChunkJdbcRepository {
     private static final String HYBRID_SQL = """
             WITH vector_arm AS (
                 SELECT c.id,
-                       row_number() OVER (ORDER BY c.embedding <=> :embedding) AS rank
+                       row_number() OVER (ORDER BY c.embedding <=> CAST(:embedding AS vector)) AS rank
                 FROM chunk c
                 WHERE c.embedding IS NOT NULL
                   AND (:filter_sections = FALSE OR c.canonical_section IN (:sections))
                   AND (:filter_papers = FALSE OR c.paper_id IN (:paper_ids))
-                ORDER BY c.embedding <=> :embedding
+                ORDER BY c.embedding <=> CAST(:embedding AS vector)
                 LIMIT :pool
             ),
             text_arm AS (
@@ -156,7 +170,7 @@ public class ChunkJdbcRepository {
                     ps.setInt(5, chunk.page());
                 }
                 ps.setString(6, chunk.text());
-                ps.setObject(7, new PGvector(embeddings.get(i)));
+                ps.setString(7, toVectorLiteral(embeddings.get(i)));
             }
 
             @Override
@@ -202,7 +216,7 @@ public class ChunkJdbcRepository {
                 : paperIds.stream().filter(Objects::nonNull).toList();
 
         MapSqlParameterSource params = new MapSqlParameterSource()
-                .addValue("embedding", new PGvector(queryEmbedding))
+                .addValue("embedding", toVectorLiteral(queryEmbedding))
                 .addValue("query", queryText == null ? "" : queryText)
                 .addValue("pool", searchConfig.candidatePool())
                 .addValue("rrf_k", searchConfig.rrfK())
@@ -260,6 +274,33 @@ public class ChunkJdbcRepository {
                 rs.getString("section"),
                 rs.getInt("paper_count"),
                 List.of((String[]) rs.getArray("citekeys").getArray())));
+    }
+
+    /**
+     * Renders a vector as pgvector's text form: {@code [0.1,0.2,0.3]}.
+     *
+     * <p>Bound as a string and cast by the SQL ({@code ?::vector} on insert,
+     * {@code CAST(:embedding AS vector)} in the search CTE). pgvector accepts
+     * exactly this format, and going through text avoids needing the driver
+     * type registered - which, as the class javadoc explains, cannot be done
+     * from a Spring bean.
+     *
+     * <p>{@code Float.toString} is used rather than a {@code %f} format so no
+     * precision is lost: a truncated component would silently shift every
+     * cosine distance.
+     */
+    static String toVectorLiteral(float[] vector) {
+        if (vector == null || vector.length == 0) {
+            throw new IllegalArgumentException("Embedding vector must not be empty");
+        }
+        StringBuilder sb = new StringBuilder(vector.length * 8).append('[');
+        for (int i = 0; i < vector.length; i++) {
+            if (i > 0) {
+                sb.append(',');
+            }
+            sb.append(Float.toString(vector[i]));
+        }
+        return sb.append(']').toString();
     }
 
     /**
