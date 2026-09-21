@@ -1,0 +1,109 @@
+spring:
+  application:
+    name: synthesizer
+  # pgvector autoconfiguration is switched off on purpose: we own the `chunk`
+  # table (embedding + tsvector in one row) so hybrid search can be done in a single SQL statement.
+  autoconfigure:
+    exclude:
+      - org.springframework.ai.vectorstore.pgvector.autoconfigure.PgVectorStoreAutoConfiguration
+  # Every credential is read from the environment, which is populated from .env
+  # by DotenvEnvironmentPostProcessor (see spring.factories). Real environment
+  # variables and -D flags still take precedence over the file.
+  #
+  # The defaults below match docker-compose.yml exactly, so a fresh checkout
+  # runs with no .env at all; copy .env.example to .env to override.
+  datasource:
+    url: ${LITREVIEW_DB_URL:jdbc:postgresql://localhost:5432/litreview}
+    username: ${LITREVIEW_DB_USER:litreview}
+    password: ${LITREVIEW_DB_PASSWORD:litreview_dev}
+    hikari:
+      maximum-pool-size: ${LITREVIEW_DB_POOL_SIZE:10}
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+  threads:
+    virtual:
+      enabled: true
+  servlet:
+    multipart:
+      max-file-size: 64MB
+      max-request-size: 64MB
+  ai:
+    # OpenRouter is OpenAI-API compatible. Set OPENROUTER_API_KEY in .env.
+    openai:
+      api-key: ${OPENROUTER_API_KEY:sk-placeholder}
+      base-url: ${OPENROUTER_BASE_URL:https://openrouter.ai/api/v1}
+      chat:
+        options:
+          model: ${LLM_MODEL:anthropic/claude-sonnet-4.5}
+          max-tokens: ${LLM_MAX_TOKENS:4096}
+    # This MUST be set explicitly. Both OpenAiEmbeddingAutoConfiguration and TransformersEmbeddingModelAutoConfiguration are @ConditionalOnProperty(
+    # name = "spring.ai.model.embedding", matchIfMissing = true), so leaving it
+    # unset leaves the winner to bean-definition ordering - and if OpenAI wins,
+    # every chunk is embedded against a billed remote endpoint instead of the
+    # in-process ONNX model the chunk.embedding column is sized for.
+    model:
+      embedding: transformers
+    embedding:
+      transformer:
+        tokenizer:
+          options:
+            padding: "true"
+
+litreview:
+  # where library.bib lives (classpath: or file: URL, or a bare filesystem path)
+  bib-file: ${LITREVIEW_BIB_FILE:classpath:data/library.bib}
+  # root folder that is recursively scanned for the PDFs referenced by the bib file
+  pdf-root: ${LITREVIEW_PDF_ROOT:src/main/resources/papers}
+  # cache GROBID TEI output so re-chunking never re-hits GROBID
+  tei-cache-dir: ${LITREVIEW_TEI_CACHE_DIR:.cache/tei}
+  embedding-dimension: ${LITREVIEW_EMBEDDING_DIMENSION:384}
+
+  grobid:
+    url: ${LITREVIEW_GROBID_URL:http://localhost:8070}
+    # GROBID full-text extraction on a 30-page PDF can take a while
+    timeout: 5m
+    consolidate-header: true
+    consolidate-citations: false
+    # ask GROBID for sentence-segmented paragraphs
+    segment-sentences: true
+    max-retries: 2
+
+  chunking:
+    target-chars: 1200
+    max-chars: 1800
+    min-chars: 250
+    overlap-chars: 150
+    # sections that carry no synthesizable signal
+    skip-sections:
+      - references
+      - bibliography
+      - acknowledgement
+      - acknowledgements
+      - appendix
+      - author contributions
+      - conflicts of interest
+      - funding
+
+  search:
+    default-top-k: 12
+    # candidates pulled from each retrieval arm before RRF fusion
+    candidate-pool: 60
+    rrf-k: 60
+
+  synthesis:
+    # cosine similarity above which two future-work statements are one theme
+    future-work-similarity-threshold: 0.62
+    min-papers-per-construct: 2
+
+logging:
+  level:
+    org.thesis.research.litreview: DEBUG
+    org.springframework.ai: INFO
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics

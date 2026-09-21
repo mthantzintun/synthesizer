@@ -1,0 +1,11 @@
+# Spring Boot discovers EnvironmentPostProcessor implementations through this
+# file. Note the key is org.springframework.boot.EnvironmentPostProcessor (the
+# interface lives in the root package in Spring Boot 4, not in ...boot.env) and
+# that there is no .imports file for this interface - spring.factories is still
+# the mechanism.
+#
+# This makes the application read .env itself, so the same file that docker
+# compose uses for Postgres/GROBID credentials also configures the app.
+org.springframework.boot.EnvironmentPostProcessor=\
+org.thesis.research.litreview.config.DotenvEnvironmentPostProcessor
+
